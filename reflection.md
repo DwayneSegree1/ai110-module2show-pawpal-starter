@@ -1,11 +1,25 @@
 # PawPal+ Project Reflection
 
 ## 1. System Design
+##  A user should be able to add pet information, schedule walks, see alll the task that are schedule for today
+## and see when last the pet was fed
 
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+My initial UML design (`diagrams/uml.mmd`) splits the system into data/model classes that hold pet-care information, enums/value objects that constrain that data, and service classes that turn the data into a schedule.
+
+- **Owner** — stores the owner's name, email, and preferences, and owns a list of `Pet`s.
+- **Pet** — stores name, species, breed, age, and its list of `Task`s; also exposes `get_last_completed()` so the app can answer "when was this pet last fed?"
+- **Task** — represents one care task (title, `TaskType`, `duration_minutes`, `Priority`, whether it's `recurring`, an optional preferred `TimeWindow`, and `last_completed_at`); `mark_completed()` updates that timestamp.
+- **TaskType** (enum) — categorizes a task (walk, feeding, medication, grooming, enrichment, other).
+- **Priority** (enum) — low/medium/high, used to rank tasks.
+- **TimeWindow** — a simple start/end time range a task prefers to happen in.
+- **ScheduleConstraints** — the day's available start/end time, max available minutes, and owner preferences the scheduler must respect.
+- **Scheduler** — the service that takes a `Pet`'s tasks plus `ScheduleConstraints`, ranks tasks by priority (`rank_tasks`), and produces a `DailyPlan`; `explain()` generates the reasoning text for a given entry.
+- **DailyPlan** — the output for a given date/pet: a list of `ScheduledTask` entries, with `total_duration()` and `summary()` for display.
+- **ScheduledTask** — one entry in the plan: the underlying `Task`, its assigned start/end time, and a `reason` string explaining why it was placed there.
+
+The responsibilities are split so that `Task`/`Pet`/`Owner` only hold state, `Scheduler` owns all the decision-making logic, and `DailyPlan`/`ScheduledTask` are just the display-ready result — keeping the scheduling algorithm isolated from both data storage and the UI.
 
 **b. Design changes**
 
@@ -25,6 +39,8 @@
 
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
+
+In pawpal_system.py I fixed four structural gaps: Scheduler.build_schedule now takes (pet, constraints) instead of also taking a separate tasks list (removing the redundant/ambiguous duplicate of pet.tasks); Pet gained a current_plan field so today's generated schedule can be stored and re-read instead of recomputed; ScheduledTask gained an overlaps(other) stub to give time-conflict checking a defined home; and the Owner.add_pet() relationship is now intended to be the single place that keeps Pet.owner and Owner.pets in sync. All added methods are still empty (pass) — only the structure/signatures changed, no scheduling logic was implemented.
 
 ---
 

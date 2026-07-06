@@ -79,14 +79,12 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
-
 | Feature | Method(s) | Notes |
 |---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Task sorting | `Scheduler.rank_tasks()`, `Scheduler.sort_by_time()` | `rank_tasks()` orders tasks by priority (high → low), breaking ties by preferred start time — this is what `build_schedule()` uses to decide fit order. `sort_by_time()` orders tasks purely by preferred start time, ignoring priority, for a simple chronological view. |
+| Filtering | `Scheduler.filter_by_completion()`, `Scheduler.filter_by_pet()` | `filter_by_completion(tasks, completed)` splits a task list into done/pending based on `Task.last_completed_at`. `filter_by_pet(owner, pet_name)` returns just the named pet's tasks via `Owner.get_pet()`. |
+| Conflict handling | `DailyPlan.add_entry()`, `Scheduler.check_for_conflicts()` | `add_entry()` prevents a pet's own plan from holding two overlapping entries (skipped tasks are recorded in `DailyPlan.warnings` instead of vanishing silently). `check_for_conflicts(plans)` does a lightweight pairwise scan across one or more pets' plans and returns warning strings for any overlapping time slots — same pet or different pets sharing one owner — without raising or crashing. |
+| Recurring tasks | `Task.mark_completed()`, `Task.next_occurrence()` | Each `Task` has a `recurrence` (`NONE`/`DAILY`/`WEEKLY`). Calling `mark_completed(timestamp)` records completion and automatically spawns the next occurrence via `next_occurrence()`, which uses `datetime.timedelta` (`+1 day` or `+7 days`) to compute the new `due_date` — handling month/year rollovers for free. |
 
 ## 📸 Demo Walkthrough
 

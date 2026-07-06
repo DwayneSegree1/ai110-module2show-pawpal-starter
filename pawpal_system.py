@@ -26,6 +26,18 @@ class Priority(Enum):
     HIGH = "high"
 
 
+class Recurrence(Enum):
+    NONE = "none"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
+_RECURRENCE_INTERVALS = {
+    Recurrence.DAILY: timedelta(days=1),
+    Recurrence.WEEKLY: timedelta(days=7),
+}
+
+
 @dataclass
 class TimeWindow:
     start_time: time
@@ -50,13 +62,51 @@ class Task:
     task_type: TaskType
     duration_minutes: int
     priority: Priority
-    recurring: bool = False
+    recurrence: Recurrence = Recurrence.NONE
     preferred_window: TimeWindow | None = None
+    due_date: date | None = None
     last_completed_at: datetime | None = field(default=None, init=False)
 
-    def mark_completed(self, timestamp: datetime) -> None:
-        """Record when this task was last completed."""
+    def mark_completed(self, timestamp: datetime) -> "Task | None":
+        """Record completion and, for daily/weekly tasks, spawn the next occurrence.
+
+        Args:
+            timestamp: When the task was completed. Used as the base date for
+                calculating the next occurrence's due date.
+
+        Returns:
+            A new Task representing the next occurrence if this task recurs
+            (daily or weekly), otherwise None.
+        """
         self.last_completed_at = timestamp
+        return self.next_occurrence(timestamp.date())
+
+    def next_occurrence(self, from_date: date | None = None) -> "Task | None":
+        """Return a new Task for the next daily/weekly occurrence, or None if not recurring.
+
+        Uses `datetime.timedelta` to advance `from_date` by one day (daily) or
+        seven days (weekly), so calendar boundaries (month/year rollover) are
+        handled automatically rather than computed by hand.
+
+        Args:
+            from_date: The date to advance from. Defaults to today if omitted.
+
+        Returns:
+            A copy of this task with an updated `due_date`, or None if this
+            task's `recurrence` is `Recurrence.NONE`.
+        """
+        interval = _RECURRENCE_INTERVALS.get(self.recurrence)
+        if interval is None:
+            return None
+        return Task(
+            title=self.title,
+            task_type=self.task_type,
+            duration_minutes=self.duration_minutes,
+            priority=self.priority,
+            recurrence=self.recurrence,
+            preferred_window=self.preferred_window,
+            due_date=(from_date or date.today()) + interval,
+        )
 
 
 @dataclass
@@ -121,6 +171,7 @@ class DailyPlan:
     plan_date: date
     pet: Pet
     entries: list[ScheduledTask] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def add_entry(self, entry: ScheduledTask) -> None:
         """Add a scheduled entry, raising if it conflicts with an existing one."""
@@ -146,6 +197,8 @@ class DailyPlan:
             )
         if len(lines) == 1:
             lines.append("  No tasks scheduled.")
+        for warning in self.warnings:
+            lines.append(f"  WARNING: {warning}")
         return "\n".join(lines)
 
 
@@ -168,13 +221,44 @@ class Scheduler:
 
             try:
                 plan.add_entry(entry)
-            except ValueError:
+            except ValueError as exc:
+                plan.warnings.append(str(exc))
                 continue
 
             elapsed_minutes += task.duration_minutes
 
         pet.current_plan = plan
         return plan
+
+    def check_for_conflicts(self, plans: list[DailyPlan]) -> list[str]:
+        """Lightweight pairwise scan for entries that overlap in time.
+
+        Compares every entry against every other entry across the given plans
+        (whether from the same pet or different pets sharing one owner) and
+        returns a warning message per overlap instead of raising, so callers
+        can surface double-bookings without interrupting scheduling. This is
+        an O(n^2) pairwise comparison rather than an interval-tree/sweep-line
+        algorithm, which is intentional: task lists here are small enough
+        that simplicity beats asymptotic optimality.
+
+        Args:
+            plans: One or more DailyPlans to check, possibly for different pets.
+
+        Returns:
+            A list of human-readable warning strings, one per overlapping
+            pair of entries. Empty if no conflicts are found.
+        """
+        tagged = [(plan.pet.name, entry) for plan in plans for entry in plan.entries]
+        warnings = []
+        for i, (pet_a, entry_a) in enumerate(tagged):
+            for pet_b, entry_b in tagged[i + 1 :]:
+                if entry_a.overlaps(entry_b):
+                    warnings.append(
+                        f"'{entry_a.task.title}' ({pet_a}, {entry_a.start_time.strftime('%H:%M')}-"
+                        f"{entry_a.end_time.strftime('%H:%M')}) overlaps '{entry_b.task.title}' "
+                        f"({pet_b}, {entry_b.start_time.strftime('%H:%M')}-{entry_b.end_time.strftime('%H:%M')})"
+                    )
+        return warnings
 
     def rank_tasks(self, tasks: list[Task]) -> list[Task]:
         """Sort tasks by priority, breaking ties by preferred start time."""
@@ -185,6 +269,49 @@ class Scheduler:
                 t.preferred_window.start_time if t.preferred_window else time.max,
             ),
         )
+
+    def sort_by_time(self, tasks: list[Task]) -> list[Task]:
+        """Sort tasks by their preferred start time, ignoring priority.
+
+        Tasks without a `preferred_window` sort last, since they have no
+        start time to compare.
+
+        Args:
+            tasks: Tasks to sort.
+
+        Returns:
+            A new list of tasks ordered earliest-to-latest start time.
+        """
+        return sorted(
+            tasks,
+            key=lambda t: t.preferred_window.start_time if t.preferred_window else time.max,
+        )
+
+    def filter_by_completion(self, tasks: list[Task], completed: bool) -> list[Task]:
+        """Return the tasks whose completion status matches the given flag.
+
+        Args:
+            tasks: Tasks to filter.
+            completed: True to keep tasks with a `last_completed_at` timestamp,
+                False to keep tasks that haven't been completed yet.
+
+        Returns:
+            The subset of `tasks` matching the requested completion status.
+        """
+        return [t for t in tasks if (t.last_completed_at is not None) == completed]
+
+    def filter_by_pet(self, owner: Owner, pet_name: str) -> list[Task]:
+        """Return the tasks belonging to the named pet, if that pet exists.
+
+        Args:
+            owner: The owner whose pets are searched.
+            pet_name: Name of the pet to look up (via `Owner.get_pet`).
+
+        Returns:
+            That pet's task list, or an empty list if no pet matches the name.
+        """
+        pet = owner.get_pet(pet_name)
+        return list(pet.tasks) if pet else []
 
     def explain(self, entry: ScheduledTask) -> str:
         """Return a short human-readable reason this entry was scheduled."""
